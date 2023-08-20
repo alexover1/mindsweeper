@@ -189,11 +189,8 @@ int main(void)
 		.dir = 1,
 	};
 	
-	{
-		const int x = 4;
-		bit_array_enable(&level.collision, 0*screen_width + x);
-		bit_array_enable(&level.collision, 4*screen_width + x);
-	}
+	bit_array_enable(&level.collision, 0*screen_width + 4);
+	bit_array_enable(&level.collision, 4*screen_width + 4);
 #endif
 
 	while (!quit) {
