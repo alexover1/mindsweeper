@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <assert.h>
 #include <string.h>
+#include <stdarg.h>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -24,10 +25,14 @@
 #include <unistd.h>
 #endif
 
+// Linear algebra library
+#include "la.h"
+
 //----------------------------------------------------------------------------------
 // Some Defines
 //----------------------------------------------------------------------------------
-#define MAX_ENTITIES 16   // Maximum number of alive entities
+#define MAX_ENTITIES 16    // Maximum number of alive entities
+#define MAX_SNAKE_LENGTH 6 // Maximum length of the tail of a snake
 
 #define RED   "\x1B[31m"
 #define GRN   "\x1B[32m"
@@ -38,28 +43,20 @@
 #define WHT   "\x1B[37m"
 #define DEF   "\x1B[0m"
 
-#define SWAP(T, a, b) do { T t = a; a = b; b = t; } while (0)
-#define SIGN(T, x)    ((T)((x) > 0) - (T)((x) < 0))
-#define ABS(T, x)     (SIGN(T, x)*(x))
-
-#define MAX(T, a, b) ((a > b) ? a : b)
-#define MIN(T, a, b) ((a > b) ? b : a)
-
 //----------------------------------------------------------------------------------
 // Types and Structures Definition
 //----------------------------------------------------------------------------------
-typedef struct Vec2 {
-	int x, y;
-} Vec2;
-
-bool vec2_eq(Vec2 a, Vec2 b);
-void vec2_add(Vec2 *d, Vec2 a, Vec2 b);
-void vec2_sub(Vec2 *d, Vec2 a, Vec2 b);
+const Vec2 UP    = { 0, -1};
+const Vec2 DOWN  = { 0,  1};
+const Vec2 LEFT  = {-1,  0};
+const Vec2 RIGHT = { 1,  0};
+static const Vec2 dirs[4] = { UP, DOWN, LEFT, RIGHT };
 
 typedef enum Tag {
 	UNINITIALIZED  = 0,
 	MOVING_SOLDIER = 1,
 	TIMER_BOMB     = 2,
+	SNAKE          = 3,
 } Tag;
 
 typedef struct Moving_Soldier {
@@ -72,9 +69,18 @@ typedef struct Timer_Bomb {
 	int timer;
 } Timer_Bomb;
 
+typedef struct Snake {
+	Vec2 points[MAX_SNAKE_LENGTH];
+	int length;
+	Vec2 dir;
+} Snake;
+
+static bool snake_can_move_to(const Snake *snake, Vec2 pos);
+
 typedef union Subclass {
 	Moving_Soldier moving_soldier;
 	Timer_Bomb     timer_bomb;
+	Snake          snake;
 } Subclass;
 
 typedef struct Bit_Array {
@@ -113,6 +119,11 @@ static int key_this_frame;           // The input key we pressed this frame
 
 static Level level = {0};
 static Vec2 player = {0};
+static Vec2 player_dir = {0};
+
+static char log_buffer[8192] = {0};
+static int log_size = 0;
+#define ARRAY_LEN(xs) (sizeof(xs)/sizeof(xs[0]))
 
 //------------------------------------------------------------------------------------
 // Module Functions Declaration (local)
@@ -122,6 +133,8 @@ static void update_game(void);       // Update game (one frame)
 static void draw_game(void);         // Draw game (one frame)
 static void unload_game(void);       // Unload game
 static void update_draw_frame(void); // Update and Draw (one frame)
+
+static void logprint(const char *format, ...);
 
 //------------------------------------------------------------------------------------
 // Program main entry point
@@ -177,7 +190,7 @@ int main(void)
 	for (int x = 0; x < screen_width; ++x) {
 		bit_array_enable(&level.collision, 1*screen_width + x);
 	}
-#else
+#elif 0
 	player.y = 1;
 
 	const int i = create_entity();
@@ -191,6 +204,19 @@ int main(void)
 	
 	bit_array_enable(&level.collision, 0*screen_width + 4);
 	bit_array_enable(&level.collision, 4*screen_width + 4);
+#else
+	Snake snake;
+	snake.length = 4;
+	const Vec2 snake_pos = {screen_width-snake.length, 0};
+	for (int i = 0; i < snake.length; ++i) {
+		snake.points[i].x = snake_pos.x+i;
+		snake.points[i].y = snake_pos.y;
+	}
+
+	const int i = create_entity();
+	level.e_pos[i] = snake_pos;
+	level.e_tag[i] = SNAKE;
+	level.e_sub[i].snake = snake;
 #endif
 
 	while (!quit) {
@@ -206,6 +232,13 @@ int main(void)
 #else
 	tcsetattr(STDIN_FILENO, TCSANOW, &saved_attr);
 #endif
+
+	// Display the results of the log
+	if (log_size > 0) {
+		printf("=================================\n");
+		printf("%.*s", log_size, log_buffer);
+		printf("=================================\n");
+	}
 
 	return 0;
 }
@@ -224,25 +257,30 @@ void update_game(void)
 {
 	if (game_over) return;
 
-	bool moved = false;
+	Vec2 dir;
 
 	// Handle Input from the User
 	switch (key_this_frame) {
 	case 'w':
-		moved = move_player_checked(0, -1);
+		dir = UP;
 		break;
 	case 's':
-		moved = move_player_checked(0, 1);
+		dir = DOWN;
 		break;
 	case 'a':
-		moved = move_player_checked(-1, 0);
+		dir = LEFT;
 		break;
 	case 'd':
-		moved = move_player_checked(1, 0);
+		dir = RIGHT;
 		break;
+	default:
+		// Pressed some other Key
+		return;
 	}
 	
-	if (!moved) return;
+	if (!move_player_checked(v2_arg(dir))) return;
+	
+	player_dir = dir;
 	
 	// Check for Collision after Moving
 	for (int i = 0; i < level.num_entities; ++i) {
@@ -251,22 +289,23 @@ void update_game(void)
 		case UNINITIALIZED: break;
 		case MOVING_SOLDIER: {
 			Moving_Soldier *soldier = &level.e_sub[i].moving_soldier;
+
+			// v = sign(delta) * dir
+			Vec2 v;
+			v2_sgn(v, soldier->delta);
+			v2_muls(v, v, soldier->dir);
 			
-			Vec2 v = {
-				soldier->dir * SIGN(int, soldier->delta.x),
-				soldier->dir * SIGN(int, soldier->delta.y)
-			};
-			
+			// d = pos - start
 			Vec2 d;
-			vec2_sub(&d, pos, soldier->start);
+			v2_sub(d, pos, soldier->start);
 			
-			if (vec2_eq(d, soldier->delta)) {
+			if (v2_eql(d, soldier->delta)) {
 				soldier->dir *= -1;
 			}
 			
-			vec2_add(&level.e_pos[i], pos, v);
+			v2_add(level.e_pos[i], pos, v);
 			
-			if (vec2_eq(player, level.e_pos[i])) {
+			if (v2_eql(player, level.e_pos[i])) {
 				game_over = true;
 				continue;
 			}
@@ -276,9 +315,9 @@ void update_game(void)
 			Timer_Bomb *bomb = &level.e_sub[i].timer_bomb;
 		
 			if (bomb->timer-- == 1) {
-				if (vec2_eq(player, pos)) {
+				if (v2_eql(player, pos)) {
 					game_over = true;
-					continue;
+					return;
 				}
 				// Explode!
 				delete_entity(i);
@@ -286,6 +325,59 @@ void update_game(void)
 				continue;
 			}
 		} break;
+		
+		case SNAKE: {
+			Snake *snake = &level.e_sub[i].snake;
+
+			// There must be at least 2 points
+			assert(snake->length >= 2);
+			
+			const int head = snake->length-1;
+
+			// Previous direction the Snake moved
+			Vec2 dprev;
+			v2_sub(dprev, snake->points[head-1], snake->points[head]);
+			
+			// Find the Shortest Distance to the Player
+			Vec2 cur = {0};
+			
+			for (int i = 0; i < 4; ++i) {
+				Vec2 next = dirs[i];
+			
+				// cur_move = head + cur
+				// new_move = head + next
+				Vec2 cur_move, new_move;
+				v2_add(cur_move, snake->points[head], cur);
+				v2_add(new_move, snake->points[head], next);
+				
+				Vec2 t1, t2; // Temporary storage vectors
+				int dnew = v2_dst(t1, player, new_move);
+				int dcur = v2_dst(t2, player, cur_move);
+				
+				if (dnew < dcur) {
+					if (snake_can_move_to(snake, new_move)) {
+						cur = next;
+					}
+				}
+			}
+			
+			if (cur.x != 0 || cur.y != 0) {
+				// Move the Snake
+				for (int i = 0; i < head; ++i) {
+					snake->points[i] = snake->points[i+1];
+				}
+				v2_add(snake->points[head], snake->points[head], cur);
+			}
+	
+			// Check for Collision with Any of our Points
+			for (int i = 0; i < snake->length; ++i) {
+				if (v2_eql(player, snake->points[i])) {
+					game_over = true;
+					return;
+				}
+			}
+		} break;
+		
 		}
 	}
 }
@@ -316,7 +408,7 @@ void draw_game(void)
 	for (size_t i = 0; i < level.num_entities; ++i) {
 		const int x = level.e_pos[i].x;
 		const int y = level.e_pos[i].y;
-		const Subclass data = level.e_sub[i];
+		const Subclass *data = &level.e_sub[i];
 		
 		switch (level.e_tag[i]) {
 		case UNINITIALIZED: break;
@@ -326,10 +418,21 @@ void draw_game(void)
 		} break;
 		
 		case TIMER_BOMB: {
-			int timer = data.timer_bomb.timer;			
+			int timer = data->timer_bomb.timer;			
 			assert(0 <= timer && timer <= 9);
 			screen[y][x] = '0' + timer;
 		} break;
+		
+		case SNAKE: {
+			const int end = data->snake.length-1;
+			for (int i = 0; i < end; ++i) {
+				const Vec2 point = data->snake.points[i];
+				screen[point.y][point.x] = 'c';
+			}
+			const Vec2 endpoint = data->snake.points[end];
+			screen[endpoint.y][endpoint.x] = 'C';
+		} break;
+		
 		}
 	}
 	
@@ -355,7 +458,7 @@ void update_draw_frame(void)
 		quit = true;
 		return;
 	}
-		
+
 	update_game();
 		
 	// Move the Terminal Cursor
@@ -366,23 +469,6 @@ void update_draw_frame(void)
 //--------------------------------------------------------------------------------------
 // Math Functions Definition
 //--------------------------------------------------------------------------------------
-inline bool vec2_eq(Vec2 a, Vec2 b)
-{
-	return a.x == b.x && a.y == b.y;
-}
-
-inline void vec2_add(Vec2 *d, Vec2 a, Vec2 b)
-{
-	d->x = a.x + b.x;
-	d->y = a.y + b.y;
-}
-
-inline void vec2_sub(Vec2 *d, Vec2 a, Vec2 b)
-{
-	d->x = a.x - b.x;
-	d->y = a.y - b.y;
-}
-
 inline void bit_array_enable(Bit_Array *bits, size_t i)
 {
 	bits->chunks[i/64] |= 1ULL<<(i%64);
@@ -429,6 +515,45 @@ inline bool move_player_checked(int dx, int dy)
 	// Branchless to go fast
 	const int inside = check_boundary(player.x + dx, player.y + dy);
 	const Vec2 d = {dx*inside, dy*inside};
-	vec2_add(&player, player, d);
+	v2_add(player, player, d);
 	return inside;
+}
+
+inline bool snake_can_move_to(const Snake *snake, Vec2 pos)
+{
+	if (check_boundary(pos.x, pos.y)) {
+		for (int i = 0; i < snake->length; ++i) {
+			if (v2_eql(snake->points[i], pos)) {
+				return false;
+			}
+		}
+		return true;
+	}
+	return false;
+}
+
+void logprint(const char *format, ...)
+{
+	va_list ap;
+	va_start(ap, format);
+	
+	// va_arg() modifies the va_list so we have to copy it
+	va_list tmp;
+	va_copy(tmp, ap);
+	
+	// Test how much space it will require to print the message
+	int n = vsnprintf(NULL, 0, format, tmp);
+	
+	va_end(tmp);
+	
+	// Silently fails for now
+	if (n > ARRAY_LEN(log_buffer)) {
+		return;
+	}
+	
+	char *buf = log_buffer + log_size;
+	vsnprintf(buf, ARRAY_LEN(log_buffer) - log_size, format, ap);
+	log_size += n;
+	
+	va_end(ap);
 }
