@@ -46,6 +46,7 @@ typedef struct Vec2 {
 } Vec2;
 
 bool vec2_eq(Vec2 a, Vec2 b);
+void vec2_add(Vec2 *d, Vec2 a, Vec2 b);
 
 typedef enum Tag {
 	UNINITIALIZED  = 0,
@@ -156,7 +157,7 @@ int main(void)
 	init_game();
 	
 #if 1
-	size_t i = create_entity();
+	const size_t i = create_entity();
 	level.e_pos[i] = (Vec2){5, 0};
 	level.e_tag[i] = TIMER_BOMB;
 	level.e_sub[i].timer_bomb = (Timer_Bomb){
@@ -265,9 +266,9 @@ void draw_game(void)
 	
 	// Draw the Objects
 	for (size_t i = 0; i < level.num_entities; ++i) {
-		int x = level.e_pos[i].x;
-		int y = level.e_pos[i].y;
-		Subclass data = level.e_sub[i];
+		const int x = level.e_pos[i].x;
+		const int y = level.e_pos[i].y;
+		const Subclass data = level.e_sub[i];
 		
 		switch (level.e_tag[i]) {
 		case UNINITIALIZED: break;
@@ -324,6 +325,12 @@ inline bool vec2_eq(Vec2 a, Vec2 b)
 	return a.x == b.x && a.y == b.y;
 }
 
+inline void vec2_add(Vec2 *d, Vec2 a, Vec2 b)
+{
+	d->x = a.x + b.x;
+	d->y = a.y + b.y;
+}
+
 inline void bit_array_enable(Bit_Array *bits, size_t i)
 {
 	bits->chunks[i/64] |= 1ULL<<(i%64);
@@ -365,8 +372,8 @@ inline bool check_boundary(int x, int y)
 inline bool move_player_checked(int dx, int dy)
 {
 	// Branchless to go fast
-	int inside = check_boundary(player.x + dx, player.y + dy);
-	player.x += dx*inside;
-	player.y += dy*inside;
+	const int inside = check_boundary(player.x + dx, player.y + dy);
+	const Vec2 d = {dx*inside, dy*inside};
+	vec2_add(&player, player, d);
 	return inside;
 }
