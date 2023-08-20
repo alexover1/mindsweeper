@@ -38,6 +38,13 @@
 #define WHT   "\x1B[37m"
 #define DEF   "\x1B[0m"
 
+#define SWAP(T, a, b) do { T t = a; a = b; b = t; } while (0)
+#define SIGN(T, x)    ((T)((x) > 0) - (T)((x) < 0))
+#define ABS(T, x)     (SIGN(T, x)*(x))
+
+#define MAX(T, a, b) ((a > b) ? a : b)
+#define MIN(T, a, b) ((a > b) ? b : a)
+
 //----------------------------------------------------------------------------------
 // Types and Structures Definition
 //----------------------------------------------------------------------------------
@@ -47,6 +54,7 @@ typedef struct Vec2 {
 
 bool vec2_eq(Vec2 a, Vec2 b);
 void vec2_add(Vec2 *d, Vec2 a, Vec2 b);
+void vec2_sub(Vec2 *d, Vec2 a, Vec2 b);
 
 typedef enum Tag {
 	UNINITIALIZED  = 0,
@@ -55,7 +63,9 @@ typedef enum Tag {
 } Tag;
 
 typedef struct Moving_Soldier {
-	Vec2 target; // Target delta from start position (relative)
+	Vec2 start;  // Original position
+	Vec2 delta;  // Distance from start position
+	int dir;
 } Moving_Soldier;
 
 typedef struct Timer_Bomb {
@@ -156,8 +166,8 @@ int main(void)
 
 	init_game();
 	
-#if 1
-	const size_t i = create_entity();
+#if 0
+	const int i = create_entity();
 	level.e_pos[i] = (Vec2){5, 0};
 	level.e_tag[i] = TIMER_BOMB;
 	level.e_sub[i].timer_bomb = (Timer_Bomb){
@@ -167,8 +177,25 @@ int main(void)
 	for (int x = 0; x < screen_width; ++x) {
 		bit_array_enable(&level.collision, 1*screen_width + x);
 	}
-#endif
+#else
+	player.y = 1;
+
+	const int i = create_entity();
+	level.e_pos[i] = (Vec2){4, 1};
+	level.e_tag[i] = MOVING_SOLDIER;
+	level.e_sub[i].moving_soldier = (Moving_Soldier){
+		.start = level.e_pos[i],
+		.delta = {0, 1},
+		.dir = 1,
+	};
 	
+	{
+		const int x = 4;
+		bit_array_enable(&level.collision, 0*screen_width + x);
+		bit_array_enable(&level.collision, 4*screen_width + x);
+	}
+#endif
+
 	while (!quit) {
 		update_draw_frame();
 	}
@@ -222,17 +249,37 @@ void update_game(void)
 	
 	// Check for Collision after Moving
 	for (int i = 0; i < level.num_entities; ++i) {
+		Vec2 pos = level.e_pos[i];
 		switch (level.e_tag[i]) {
 		case UNINITIALIZED: break;
-		case MOVING_SOLDIER:
-			assert(0 && "unimplemented");
-			break;
+		case MOVING_SOLDIER: {
+			Moving_Soldier *soldier = &level.e_sub[i].moving_soldier;
+			
+			Vec2 v = {
+				soldier->dir * SIGN(int, soldier->delta.x),
+				soldier->dir * SIGN(int, soldier->delta.y)
+			};
+			
+			Vec2 d;
+			vec2_sub(&d, pos, soldier->start);
+			
+			if (vec2_eq(d, soldier->delta)) {
+				soldier->dir *= -1;
+			}
+			
+			vec2_add(&level.e_pos[i], pos, v);
+			
+			if (vec2_eq(player, level.e_pos[i])) {
+				game_over = true;
+				continue;
+			}
+		} break;
 			
 		case TIMER_BOMB: {
 			Timer_Bomb *bomb = &level.e_sub[i].timer_bomb;
 		
 			if (bomb->timer-- == 1) {
-				if (vec2_eq(player, level.e_pos[i])) {
+				if (vec2_eq(player, pos)) {
 					game_over = true;
 					continue;
 				}
@@ -264,6 +311,9 @@ void draw_game(void)
 		}
 	}
 	
+	// Draw the Player
+	screen[player.y][player.x] = 'o';
+
 	// Draw the Objects
 	for (size_t i = 0; i < level.num_entities; ++i) {
 		const int x = level.e_pos[i].x;
@@ -285,9 +335,7 @@ void draw_game(void)
 		}
 	}
 	
-	// Draw the Player
-	screen[player.y][player.x] = 'o';
-	
+	// Print the Screen to the Console
 	for (int y = 0; y < screen_height; ++y) {
 		printf("%.*s\n", screen_width, screen[y]);
 	}
@@ -318,7 +366,7 @@ void update_draw_frame(void)
 }
 
 //--------------------------------------------------------------------------------------
-// Implementation Functions Definition
+// Math Functions Definition
 //--------------------------------------------------------------------------------------
 inline bool vec2_eq(Vec2 a, Vec2 b)
 {
@@ -331,6 +379,12 @@ inline void vec2_add(Vec2 *d, Vec2 a, Vec2 b)
 	d->y = a.y + b.y;
 }
 
+inline void vec2_sub(Vec2 *d, Vec2 a, Vec2 b)
+{
+	d->x = a.x - b.x;
+	d->y = a.y - b.y;
+}
+
 inline void bit_array_enable(Bit_Array *bits, size_t i)
 {
 	bits->chunks[i/64] |= 1ULL<<(i%64);
@@ -341,6 +395,9 @@ inline bool bit_array_contains(const Bit_Array *bits, size_t i)
 	return (bits->chunks[i/64]>>(i%64))&1;
 }
 
+//--------------------------------------------------------------------------------------
+// Internal Functions Definition
+//--------------------------------------------------------------------------------------
 inline int create_entity(void)
 {
 	assert(level.num_entities < MAX_ENTITIES);
@@ -354,7 +411,7 @@ inline void delete_entity(int id)
 		return;
 	}
 
-	const int end = level.num_entities--;
+	const int end = --level.num_entities;
 
 	// Swap with the Last Element
 	level.e_pos[id] = level.e_pos[end];
