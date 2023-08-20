@@ -280,6 +280,7 @@ void update_game(void)
 					game_over = true;
 					continue;
 				}
+				// Explode!
 				delete_entity(i);
 				i -= 1;
 				continue;
