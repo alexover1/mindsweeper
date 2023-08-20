@@ -91,7 +91,7 @@ int  create_entity(void);
 void delete_entity(int);
 
 bool check_boundary(int x, int y);
-bool move_safe(int dx, int dy);
+bool move_player_checked(int dx, int dy);
 
 //------------------------------------------------------------------------------------
 // Global Variables Declaration
@@ -99,6 +99,7 @@ bool move_safe(int dx, int dy);
 static int screen_width = 10;
 static int screen_height = 5;        // Looks good when using screen_width/2
 static bool game_over = false;
+static bool quit = false;
 static int key_this_frame;           // The input key we pressed this frame
 
 static Level level = {0};
@@ -156,7 +157,7 @@ int main(void)
 
 	init_game();
 	
-	// @nocheckin
+#if 1
 	size_t i = create_entity();
 	level.e_pos[i] = (Vec2){5, 0};
 	level.e_tag[i] = TIMER_BOMB;
@@ -167,20 +168,10 @@ int main(void)
 	for (int x = 0; x < screen_width; ++x) {
 		bit_array_enable(&level.collision, 1*screen_width + x);
 	}
+#endif
 	
-	while (1) {
-		draw_game();
-
-		key_this_frame = fgetc(stdin);
-		if (key_this_frame == 'q') {
-			break;
-		}
-		
-		update_game();
-		
-		// Move the Terminal Cursor
-		printf("\e[%dA", screen_height);
-		printf("\e[%dD", screen_width);
+	while (!quit) {
+		update_draw_frame();
 	}
 	
 	// Restore the original console mode
@@ -215,16 +206,16 @@ void update_game(void)
 	// Handle Input from the User
 	switch (key_this_frame) {
 	case 'w':
-		moved = move_safe(0, -1);
+		moved = move_player_checked(0, -1);
 		break;
 	case 's':
-		moved = move_safe(0, 1);
+		moved = move_player_checked(0, 1);
 		break;
 	case 'a':
-		moved = move_safe(-1, 0);
+		moved = move_player_checked(-1, 0);
 		break;
 	case 'd':
-		moved = move_safe(1, 0);
+		moved = move_player_checked(1, 0);
 		break;
 	}
 	
@@ -312,7 +303,19 @@ void unload_game(void)
 
 void update_draw_frame(void)
 {
+	draw_game();
 
+	key_this_frame = fgetc(stdin);
+	if (key_this_frame == 'q') {
+		quit = true;
+		return;
+	}
+		
+	update_game();
+		
+	// Move the Terminal Cursor
+	printf("\e[%dA", screen_height);
+	printf("\e[%dD", screen_width);
 }
 
 //--------------------------------------------------------------------------------------
@@ -361,9 +364,9 @@ inline bool check_boundary(int x, int y)
 	return !bit_array_contains(&level.collision, y*screen_width + x);
 }
 
-// Branchless to go fast
-inline bool move_safe(int dx, int dy)
+inline bool move_player_checked(int dx, int dy)
 {
+	// Branchless to go fast
 	int inside = check_boundary(player.x + dx, player.y + dy);
 	player.x += dx*inside;
 	player.y += dy*inside;
